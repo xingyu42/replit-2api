@@ -120,14 +120,6 @@
 
   Click "Deploy" in Replit to publish. The proxy will be available at `https://<your-app>.replit.app`.
 
-  ### 6. Connect Claude Code
-
-  ```bash
-  export ANTHROPIC_BASE_URL=https://<your-app>.replit.app
-  export ANTHROPIC_API_KEY=<your-PROXY_API_KEY>
-  claude
-  ```
-
   ## License
 
   MIT
