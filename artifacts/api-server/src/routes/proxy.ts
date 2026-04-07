@@ -24,10 +24,11 @@ function verifyBearer(req: Request, res: Response): boolean {
     res.status(401).json({ error: { message: "Unauthorized", type: "auth_error", code: 401 } });
     return false;
   }
-  const auth = req.headers.authorization ?? "";
-  const bearerToken = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-  const xApiKey = (req.headers["x-api-key"] as string) ?? "";
-  if (bearerToken === key || xApiKey === key) {
+  const auth = (req.headers.authorization ?? "").trim();
+  const bearerToken = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  const rawAuth = bearerToken || auth;
+  const xApiKey = ((req.headers["x-api-key"] as string) ?? "").trim();
+  if (rawAuth === key || xApiKey === key) {
     return true;
   }
   res.status(401).json({ error: { message: "Unauthorized", type: "auth_error", code: 401 } });
