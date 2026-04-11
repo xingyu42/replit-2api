@@ -49,16 +49,6 @@
 
   Use `--effort max` to enable extended thinking.
 
-  ## Environment Variables
-
-  | Variable                             | Description                       |
-  | ------------------------------------ | --------------------------------- |
-  | `PROXY_API_KEY`                      | API key for client authentication |
-  | `AI_INTEGRATIONS_OPENAI_API_KEY`     | OpenAI backend API key            |
-  | `AI_INTEGRATIONS_OPENAI_BASE_URL`    | OpenAI backend base URL           |
-  | `AI_INTEGRATIONS_ANTHROPIC_API_KEY`  | Anthropic backend API key         |
-  | `AI_INTEGRATIONS_ANTHROPIC_BASE_URL` | Anthropic backend base URL        |
-
   ## Tech Stack
 
   - **Proxy Server**: Express 5, TypeScript, OpenAI SDK, Anthropic SDK, tiktoken
