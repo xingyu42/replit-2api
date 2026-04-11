@@ -7,7 +7,13 @@
     "typecheck": "pnpm -r --if-present run typecheck"
   },
   "private": true,
+  "packageManager": "pnpm@10.4.1",
   "devDependencies": {
     "typescript": "~5.9.2"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

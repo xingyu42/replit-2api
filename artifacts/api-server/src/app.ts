@@ -1,9 +1,12 @@
 import express, { type Express } from "express";
+import path from "path";
 import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
 import proxyRouter from "./routes/proxy";
 import { logger } from "./lib/logger";
+
+const clientDistPath = path.resolve(__dirname, "../../api-portal/dist/public");
 
 const app: Express = express();
 
@@ -32,6 +35,19 @@ app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
 app.use("/api", router);
 app.use("/v1", proxyRouter);
+
+// Serve frontend static files
+app.use(express.static(clientDistPath));
+
+// SPA fallback — serve index.html for non-API routes
+app.use((req, res, next) => {
+  if (req.method === "GET" && !req.path.startsWith("/api") && !req.path.startsWith("/v1")) {
+    return res.sendFile(path.join(clientDistPath, "index.html"), (err) => {
+      if (err) next();
+    });
+  }
+  next();
+});
 
 // 404 handler
 app.use((_req, res) => {
