@@ -454,15 +454,15 @@ function sendSSE(res: Response, data: string): void {
   }
 }
 
-function startKeepalive(res: Response, req: Request): ReturnType<typeof setInterval> {
+function startKeepalive(res: Response): ReturnType<typeof setInterval> {
   const interval = setInterval(() => sendSSE(res, ": keepalive\n\n"), 5000);
-  req.on("close", () => clearInterval(interval));
+  res.once("close", () => clearInterval(interval));
   return interval;
 }
 
-function createAbortSignal(req: Request): AbortSignal {
+function createAbortSignal(res: Response): AbortSignal {
   const controller = new AbortController();
-  req.once("close", () => controller.abort());
+  res.once("close", () => controller.abort());
   return controller.signal;
 }
 
@@ -522,9 +522,9 @@ router.post("/chat/completions", async (req: Request, res: Response) => {
 
       if (stream) {
         setupSSE(res);
-        const interval = startKeepalive(res, req);
+        const interval = startKeepalive(res);
         try {
-          const signal = createAbortSignal(req);
+          const signal = createAbortSignal(res);
           const oaiStream = await openai.chat.completions.create({ ...params, stream: true }, { signal });
           for await (const chunk of oaiStream) {
             sendSSE(res, `data: ${JSON.stringify(chunk)}\n\n`);
@@ -574,9 +574,9 @@ router.post("/chat/completions", async (req: Request, res: Response) => {
 
       if (stream) {
         setupSSE(res);
-        const interval = startKeepalive(res, req);
+        const interval = startKeepalive(res);
         try {
-          const signal = createAbortSignal(req);
+          const signal = createAbortSignal(res);
           const streamOpts = { ...reqOpts, signal };
           const msgStream = anthropic.messages.stream(anthropicParams as Anthropic.Messages.MessageCreateParamsNonStreaming, streamOpts);
           let inputTokens = 0;
@@ -741,9 +741,9 @@ router.post("/responses", async (req: Request, res: Response) => {
 
         if (stream) {
           setupSSE(res);
-          const interval = startKeepalive(res, req);
+          const interval = startKeepalive(res);
           try {
-            const signal = createAbortSignal(req);
+            const signal = createAbortSignal(res);
             const oaiStream = await openai.chat.completions.create({
               model, messages: msgs, stream: true,
               ...(oaiTools ? { tools: oaiTools } : {}),
@@ -785,9 +785,9 @@ router.post("/responses", async (req: Request, res: Response) => {
 
       if (stream) {
         setupSSE(res);
-        const interval = startKeepalive(res, req);
+        const interval = startKeepalive(res);
         try {
-          const signal = createAbortSignal(req);
+          const signal = createAbortSignal(res);
           const oaiStream = await oaiResponses.create(responsesParams, { signal });
           for await (const event of oaiStream) {
             sendSSE(res, `data: ${JSON.stringify(event)}\n\n`);
@@ -821,9 +821,9 @@ router.post("/responses", async (req: Request, res: Response) => {
 
       if (stream) {
         setupSSE(res);
-        const interval = startKeepalive(res, req);
+        const interval = startKeepalive(res);
         try {
-          const signal = createAbortSignal(req);
+          const signal = createAbortSignal(res);
           const completionId = `resp_${Date.now()}`;
           const created = Math.floor(Date.now() / 1000);
           let inputTokens = 0;
@@ -1064,9 +1064,9 @@ router.post("/messages", async (req: Request, res: Response) => {
 
       if (stream) {
         setupSSE(res);
-        const interval = startKeepalive(res, req);
+        const interval = startKeepalive(res);
         try {
-          const signal = createAbortSignal(req);
+          const signal = createAbortSignal(res);
           const streamOpts = { ...reqOpts, signal };
           const msgStream = anthropic.messages.stream(params, streamOpts);
           for await (const event of msgStream) {
@@ -1104,9 +1104,9 @@ router.post("/messages", async (req: Request, res: Response) => {
 
       if (stream) {
         setupSSE(res);
-        const interval = startKeepalive(res, req);
+        const interval = startKeepalive(res);
         try {
-          const signal = createAbortSignal(req);
+          const signal = createAbortSignal(res);
           const msgId = `msg_${Date.now()}`;
           const created = Math.floor(Date.now() / 1000);
 
@@ -1190,3 +1190,4 @@ router.post("/messages", async (req: Request, res: Response) => {
 });
 
 export default router;
+
