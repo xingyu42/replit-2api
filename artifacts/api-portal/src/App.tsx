@@ -24,37 +24,39 @@ const ENDPOINTS = [
 
 function CopyButton({ text, small }: { text: string; small?: boolean }) {
   const [copied, setCopied] = useState(false);
-  const copy = useCallback(() => {
-    const fallback = () => {
-      const el = document.createElement("textarea");
-      el.value = text;
-      document.body.appendChild(el);
-      el.select();
+  const copy = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
       document.execCommand("copy");
-      document.body.removeChild(el);
-    };
-    (navigator.clipboard?.writeText(text) ?? Promise.reject()).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {
-      fallback();
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    });
+      document.body.removeChild(textarea);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   }, [text]);
 
   return (
-    <button onClick={copy} style={{
-      padding: small ? "3px 10px" : "5px 14px",
-      background: copied ? "hsl(142,71%,45%,0.15)" : "hsl(222,47%,20%)",
-      border: `1px solid ${copied ? "hsl(142,71%,45%,0.4)" : BORDER}`,
-      borderRadius: 6,
-      color: copied ? GREEN : MUTED,
-      fontSize: small ? 11 : 12,
-      cursor: "pointer",
-      transition: "all 0.2s",
-      whiteSpace: "nowrap",
-    }}>
+    <button
+      onClick={copy}
+      aria-label={copied ? "已复制" : "复制到剪贴板"}
+      style={{
+        padding: small ? "3px 10px" : "5px 14px",
+        background: copied ? "hsl(142,71%,45%,0.15)" : "hsl(222,47%,20%)",
+        border: `1px solid ${copied ? "hsl(142,71%,45%,0.4)" : BORDER}`,
+        borderRadius: 6,
+        color: copied ? GREEN : MUTED,
+        fontSize: small ? 11 : 12,
+        cursor: "pointer",
+        transition: "all 0.2s",
+        whiteSpace: "nowrap",
+      }}>
       {copied ? "Copied!" : "Copy"}
     </button>
   );
@@ -117,7 +119,7 @@ export default function App() {
       <div style={{ borderBottom: `1px solid ${BORDER}`, padding: "0 24px" }}>
         <div style={{ maxWidth: 800, margin: "0 auto", padding: "18px 0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <div style={{ width: 36, height: 36, borderRadius: 8, background: "linear-gradient(135deg,#3b82f6,#a855f7)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>⚡</div>
+            <div style={{ width: 36, height: 36, borderRadius: 8, background: "linear-gradient(135deg,#3b82f6,#a855f7)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}><span role="img" aria-hidden="true">⚡</span></div>
             <div>
               <div style={{ fontWeight: 700, fontSize: 16, color: TEXT }}>AI Proxy API</div>
               <div style={{ fontSize: 12, color: MUTED }}>OpenAI + Anthropic dual-compatible</div>
@@ -140,13 +142,15 @@ export default function App() {
       <style>{`
         @keyframes ping { 0%,100%{transform:scale(1);opacity:.4} 50%{transform:scale(2);opacity:0} }
         code { font-family: 'JetBrains Mono', 'Fira Code', monospace; }
+        button:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
+        button:hover { opacity: 0.85; }
       `}</style>
 
       <div style={{ maxWidth: 800, margin: "0 auto", padding: "32px 24px", display: "flex", flexDirection: "column", gap: 24 }}>
 
         {/* Connection Details */}
         <Card>
-          <SectionTitle>🔌 Connection Details</SectionTitle>
+          <SectionTitle><span role="img" aria-hidden="true">🔌</span> Connection Details</SectionTitle>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: BG, borderRadius: 8, padding: "10px 14px" }}>
               <div>
@@ -167,7 +171,7 @@ export default function App() {
 
         {/* API Endpoints */}
         <Card>
-          <SectionTitle>🛣️ API Endpoints</SectionTitle>
+          <SectionTitle><span role="img" aria-hidden="true">🛣️</span> API Endpoints</SectionTitle>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {ENDPOINTS.map(ep => (
               <div key={ep.path} style={{ background: BG, borderRadius: 8, padding: "12px 14px" }}>
@@ -187,7 +191,7 @@ export default function App() {
 
         {/* Available Models */}
         <Card>
-          <SectionTitle>🤖 Available Models</SectionTitle>
+          <SectionTitle><span role="img" aria-hidden="true">🤖</span> Available Models</SectionTitle>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 8 }}>
             {OPENAI_MODELS.map(m => (
               <div key={m} style={{ background: BG, borderRadius: 8, padding: "10px 12px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -206,7 +210,7 @@ export default function App() {
 
         {/* CherryStudio Setup */}
         <Card>
-          <SectionTitle>🍒 CherryStudio Setup Guide</SectionTitle>
+          <SectionTitle><span role="img" aria-hidden="true">🍒</span> CherryStudio Setup Guide</SectionTitle>
           <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
             {[
               { n: 1, title: "Open Settings", desc: "Go to CherryStudio → Settings → Model Providers." },
@@ -235,7 +239,7 @@ export default function App() {
         {/* Quick Test */}
         <Card>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-            <SectionTitle style={{ margin: 0 }}>⚡ Quick Test (curl)</SectionTitle>
+            <SectionTitle style={{ margin: 0 }}><span role="img" aria-hidden="true">⚡</span> Quick Test (curl)</SectionTitle>
             <CopyButton text={curlExample} />
           </div>
           <div style={{ background: BG, borderRadius: 8, padding: 16, overflowX: "auto" }}>

@@ -26,11 +26,23 @@ app.use(
     },
   }),
 );
-app.use(cors());
-app.use(express.json({ limit: "50mb" }));
-app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+app.use(cors({ origin: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(",") : true }));
+app.use(express.json({ limit: "5mb" }));
+app.use(express.urlencoded({ extended: true, limit: "5mb" }));
 
 app.use("/api", router);
 app.use("/v1", proxyRouter);
+
+// 404 handler
+app.use((_req, res) => {
+  res.status(404).json({ error: "Not Found" });
+});
+
+// Global error handler
+app.use((err: Error & { status?: number; statusCode?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  const status = err.status ?? err.statusCode ?? 500;
+  logger.error(err);
+  res.status(status).json({ error: status < 500 ? err.message : "Internal Server Error" });
+});
 
 export default app;

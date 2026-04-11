@@ -47,3 +47,5 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+.ace-tool/
+.claude/

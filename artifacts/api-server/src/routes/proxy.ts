@@ -1,4 +1,6 @@
 import { Router, type Request, type Response } from "express";
+import { timingSafeEqual } from "crypto";
+import { logger } from "../lib/logger";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
 import { get_encoding, type Tiktoken } from "tiktoken";
@@ -18,6 +20,17 @@ const anthropic = new Anthropic({
 const OPENAI_MODELS = ["gpt-5.2", "gpt-5-mini", "gpt-5-nano", "o4-mini", "o3"];
 const ANTHROPIC_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"];
 
+function safeCompare(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) {
+    // Compare against bufA to prevent timing leak, but always return false
+    timingSafeEqual(bufA, bufA);
+    return false;
+  }
+  return timingSafeEqual(bufA, bufB);
+}
+
 function verifyBearer(req: Request, res: Response): boolean {
   const key = process.env.PROXY_API_KEY;
   if (!key) {
@@ -27,8 +40,9 @@ function verifyBearer(req: Request, res: Response): boolean {
   const auth = (req.headers.authorization ?? "").trim();
   const bearerToken = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   const rawAuth = bearerToken || auth;
-  const xApiKey = ((req.headers["x-api-key"] as string) ?? "").trim();
-  if (rawAuth === key || xApiKey === key) {
+  const raw = req.headers["x-api-key"];
+  const xApiKey = (Array.isArray(raw) ? raw[0] : raw ?? "").trim();
+  if (safeCompare(rawAuth, key) || safeCompare(xApiKey, key)) {
     return true;
   }
   res.status(401).json({ error: { message: "Unauthorized", type: "auth_error", code: 401 } });
@@ -192,7 +206,7 @@ function extractUpstreamError(err: unknown): { status: number; message: string; 
     message = String(err);
   }
 
-  console.error("[proxy] upstream error", { status, message });
+  logger.error({ status, message }, "[proxy] upstream error");
   return { status, message, body };
 }
 
@@ -212,7 +226,8 @@ function oaiMessagesToAnthropic(messages: OAIMessage[]): { system?: string; mess
 
   for (const msg of messages) {
     if (msg.role === "system") {
-      system = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+      const text = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content);
+      system = system === undefined ? text : system + "\n\n" + text;
       continue;
     }
     if (msg.role === "tool") {
@@ -422,56 +437,6 @@ function responsesInputToAnthropicMessages(input: ResponsesInput, instructions?:
   return oaiMessagesToAnthropic(oaiForConvert);
 }
 
-// ── OpenAI Responses API → chat completion format conversion ─────────────────
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function responsesRespToOAI(resp: any, model: string): OpenAI.Chat.ChatCompletion {
-  let text = "";
-  const toolCalls: OpenAI.Chat.ChatCompletionMessageToolCall[] = [];
-
-  const output = resp.output ?? [];
-  for (const item of output) {
-    if (item.type === "message") {
-      for (const block of item.content ?? []) {
-        if (block.type === "output_text" || block.type === "text") text += block.text ?? "";
-        if (block.type === "refusal") text += block.refusal ?? "";
-      }
-    } else if (item.type === "function_call") {
-      toolCalls.push({
-        id: item.call_id ?? item.id ?? `call_${Date.now()}`,
-        type: "function",
-        function: { name: item.name ?? "", arguments: typeof item.arguments === "string" ? item.arguments : JSON.stringify(item.arguments ?? {}) },
-      });
-    }
-  }
-
-  const rawStatus = resp.status ?? "completed";
-  const finishReason: OpenAI.Chat.ChatCompletion.Choice["finish_reason"] =
-    rawStatus === "incomplete" ? "length" :
-    toolCalls.length > 0 ? "tool_calls" : "stop";
-
-  const choice: OpenAI.Chat.ChatCompletion.Choice = {
-    index: 0,
-    message: { role: "assistant", content: text || null, refusal: null },
-    finish_reason: finishReason,
-    logprobs: null,
-  };
-  if (toolCalls.length > 0) choice.message.tool_calls = toolCalls;
-
-  return {
-    id: resp.id ?? `chatcmpl-${Date.now()}`,
-    object: "chat.completion",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    choices: [choice],
-    usage: {
-      prompt_tokens: resp.usage?.input_tokens ?? 0,
-      completion_tokens: resp.usage?.output_tokens ?? 0,
-      total_tokens: (resp.usage?.input_tokens ?? 0) + (resp.usage?.output_tokens ?? 0),
-    },
-  };
-}
-
 // ── SSE helpers ──────────────────────────────────────────────────────────────
 
 function setupSSE(res: Response): void {
@@ -493,6 +458,12 @@ function startKeepalive(res: Response, req: Request): ReturnType<typeof setInter
   const interval = setInterval(() => sendSSE(res, ": keepalive\n\n"), 5000);
   req.on("close", () => clearInterval(interval));
   return interval;
+}
+
+function createAbortSignal(req: Request): AbortSignal {
+  const controller = new AbortController();
+  req.once("close", () => controller.abort());
+  return controller.signal;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -542,14 +513,19 @@ router.post("/chat/completions", async (req: Request, res: Response) => {
         ...(tools && tools.length > 0 ? { tools } : {}),
         ...(tool_choice ? { tool_choice: tool_choice as OpenAI.Chat.ChatCompletionToolChoiceOption } : {}),
         ...(rest.temperature !== undefined ? { temperature: rest.temperature as number } : {}),
-        ...(rest.max_completion_tokens !== undefined ? { max_completion_tokens: rest.max_completion_tokens as number } : {}),
+        ...(rest.max_completion_tokens !== undefined
+          ? { max_completion_tokens: rest.max_completion_tokens as number }
+          : rest.max_tokens !== undefined
+            ? { max_completion_tokens: rest.max_tokens as number }
+            : {}),
       };
 
       if (stream) {
         setupSSE(res);
         const interval = startKeepalive(res, req);
         try {
-          const oaiStream = await openai.chat.completions.create({ ...params, stream: true });
+          const signal = createAbortSignal(req);
+          const oaiStream = await openai.chat.completions.create({ ...params, stream: true }, { signal });
           for await (const chunk of oaiStream) {
             sendSSE(res, `data: ${JSON.stringify(chunk)}\n\n`);
           }
@@ -600,9 +576,9 @@ router.post("/chat/completions", async (req: Request, res: Response) => {
         setupSSE(res);
         const interval = startKeepalive(res, req);
         try {
-          const msgStream = reqOpts
-            ? anthropic.messages.stream(anthropicParams as Anthropic.Messages.MessageCreateParamsNonStreaming, reqOpts)
-            : anthropic.messages.stream(anthropicParams as Anthropic.Messages.MessageCreateParamsNonStreaming);
+          const signal = createAbortSignal(req);
+          const streamOpts = { ...reqOpts, signal };
+          const msgStream = anthropic.messages.stream(anthropicParams as Anthropic.Messages.MessageCreateParamsNonStreaming, streamOpts);
           let inputTokens = 0;
           let outputTokens = 0;
           const completionId = `chatcmpl-${Date.now()}`;
@@ -706,16 +682,20 @@ router.post("/chat/completions", async (req: Request, res: Response) => {
           res.end();
         }
       } else {
-        const chatMsgStream = reqOpts
-          ? anthropic.messages.stream(anthropicParams as Anthropic.Messages.MessageCreateParamsNonStreaming, reqOpts)
-          : anthropic.messages.stream(anthropicParams as Anthropic.Messages.MessageCreateParamsNonStreaming);
-        const finalMsg = await chatMsgStream.finalMessage();
+        const finalMsg = await anthropic.messages.create(
+          anthropicParams as Anthropic.Messages.MessageCreateParamsNonStreaming,
+          reqOpts,
+        );
         res.json(anthropicResponseToOAI(finalMsg, model));
       }
     } else {
       res.status(400).json({ error: { message: `Unknown model: ${model}`, type: "invalid_request_error", code: 400 } });
     }
   } catch (err) {
+    if ((err as Error).name === "AbortError" || (err as { code?: string }).code === "ABORT_ERR") {
+      if (!res.headersSent) res.end();
+      return;
+    }
     const { status, message, body } = extractUpstreamError(err);
     if (!res.headersSent) {
       res.status(status).json(body ?? { error: { message, type: "server_error", code: status } });
@@ -763,12 +743,13 @@ router.post("/responses", async (req: Request, res: Response) => {
           setupSSE(res);
           const interval = startKeepalive(res, req);
           try {
+            const signal = createAbortSignal(req);
             const oaiStream = await openai.chat.completions.create({
               model, messages: msgs, stream: true,
               ...(oaiTools ? { tools: oaiTools } : {}),
               ...(tool_choice ? { tool_choice: tool_choice as OpenAI.Chat.ChatCompletionToolChoiceOption } : {}),
               ...(max_output_tokens ? { max_completion_tokens: max_output_tokens } : {}),
-            });
+            }, { signal });
             for await (const chunk of oaiStream) {
               sendSSE(res, `data: ${JSON.stringify(chunk)}\n\n`);
             }
@@ -806,7 +787,8 @@ router.post("/responses", async (req: Request, res: Response) => {
         setupSSE(res);
         const interval = startKeepalive(res, req);
         try {
-          const oaiStream = await oaiResponses.create(responsesParams);
+          const signal = createAbortSignal(req);
+          const oaiStream = await oaiResponses.create(responsesParams, { signal });
           for await (const event of oaiStream) {
             sendSSE(res, `data: ${JSON.stringify(event)}\n\n`);
           }
@@ -841,34 +823,48 @@ router.post("/responses", async (req: Request, res: Response) => {
         setupSSE(res);
         const interval = startKeepalive(res, req);
         try {
+          const signal = createAbortSignal(req);
           const completionId = `resp_${Date.now()}`;
           const created = Math.floor(Date.now() / 1000);
-          let currentToolCallIndex = -1;
           let inputTokens = 0;
           let outputTokens = 0;
           let finishReason = "stop";
+          const outputItems: unknown[] = [];
+          let textOutputIndex = -1;
+          let activeToolOutputIndex = -1;
+          let nextOutputIndex = 0;
+          let activeTextItem: { content: { text: string }[] } | null = null;
+          let activeToolItem: { arguments: string } | null = null;
 
           sendSSE(res, `data: ${JSON.stringify({ type: "response.created", response: { id: completionId, object: "response", created_at: created, model, status: "in_progress", output: [] } })}\n\n`);
 
-          const msgStream = reqOpts
-            ? anthropic.messages.stream(anthropicParams, reqOpts)
-            : anthropic.messages.stream(anthropicParams);
+          const streamOpts = { ...reqOpts, signal };
+          const msgStream = anthropic.messages.stream(anthropicParams, streamOpts);
 
           for await (const event of msgStream) {
             if (event.type === "message_start") {
               inputTokens = event.message.usage.input_tokens;
             } else if (event.type === "content_block_start") {
               if (event.content_block.type === "tool_use") {
-                currentToolCallIndex++;
-                sendSSE(res, `data: ${JSON.stringify({ type: "response.output_item.added", output_index: currentToolCallIndex + 1, item: { type: "function_call", id: event.content_block.id, name: event.content_block.name, arguments: "" } })}\n\n`);
+                activeToolOutputIndex = nextOutputIndex++;
+                const toolItem = { type: "function_call", id: event.content_block.id, call_id: event.content_block.id, name: event.content_block.name, arguments: "" };
+                activeToolItem = toolItem;
+                outputItems.push(toolItem);
+                sendSSE(res, `data: ${JSON.stringify({ type: "response.output_item.added", output_index: activeToolOutputIndex, item: toolItem })}\n\n`);
               } else if (event.content_block.type === "text") {
-                sendSSE(res, `data: ${JSON.stringify({ type: "response.output_item.added", output_index: 0, item: { type: "message", id: completionId, role: "assistant", content: [] } })}\n\n`);
+                textOutputIndex = nextOutputIndex++;
+                const msgItem = { type: "message", id: completionId, role: "assistant", content: [{ type: "output_text", text: "" }] };
+                activeTextItem = msgItem;
+                outputItems.push(msgItem);
+                sendSSE(res, `data: ${JSON.stringify({ type: "response.output_item.added", output_index: textOutputIndex, item: msgItem })}\n\n`);
               }
             } else if (event.type === "content_block_delta") {
               if (event.delta.type === "text_delta") {
-                sendSSE(res, `data: ${JSON.stringify({ type: "response.output_text.delta", output_index: 0, content_index: 0, delta: event.delta.text })}\n\n`);
+                if (activeTextItem?.content?.[0]) activeTextItem.content[0].text += event.delta.text;
+                sendSSE(res, `data: ${JSON.stringify({ type: "response.output_text.delta", output_index: textOutputIndex, content_index: 0, delta: event.delta.text })}\n\n`);
               } else if (event.delta.type === "input_json_delta") {
-                sendSSE(res, `data: ${JSON.stringify({ type: "response.function_call_arguments.delta", output_index: currentToolCallIndex + 1, delta: event.delta.partial_json })}\n\n`);
+                if (activeToolItem) activeToolItem.arguments += event.delta.partial_json;
+                sendSSE(res, `data: ${JSON.stringify({ type: "response.function_call_arguments.delta", output_index: activeToolOutputIndex, delta: event.delta.partial_json })}\n\n`);
               }
             } else if (event.type === "message_delta") {
               outputTokens = event.usage.output_tokens;
@@ -876,17 +872,17 @@ router.post("/responses", async (req: Request, res: Response) => {
             }
           }
 
-          sendSSE(res, `data: ${JSON.stringify({ type: "response.completed", response: { id: completionId, object: "response", created_at: created, model, status: "completed", output: [], usage: { input_tokens: inputTokens, output_tokens: outputTokens }, incomplete_details: finishReason === "length" ? { reason: "max_tokens" } : null } })}\n\n`);
+          sendSSE(res, `data: ${JSON.stringify({ type: "response.completed", response: { id: completionId, object: "response", created_at: created, model, status: "completed", output: outputItems, usage: { input_tokens: inputTokens, output_tokens: outputTokens }, incomplete_details: finishReason === "length" ? { reason: "max_tokens" } : null } })}\n\n`);
           sendSSE(res, "data: [DONE]\n\n");
         } finally {
           clearInterval(interval);
           res.end();
         }
       } else {
-        const respMsgStream = reqOpts
-          ? anthropic.messages.stream(anthropicParams, reqOpts)
-          : anthropic.messages.stream(anthropicParams);
-        const finalMsg = await respMsgStream.finalMessage();
+        const finalMsg = await anthropic.messages.create(
+          anthropicParams as Anthropic.Messages.MessageCreateParamsNonStreaming,
+          reqOpts,
+        );
         const outputItems: unknown[] = [];
         let text = "";
         const toolCalls: { type: string; id: string; name: string; arguments: string }[] = [];
@@ -917,6 +913,10 @@ router.post("/responses", async (req: Request, res: Response) => {
       res.status(400).json({ error: { message: `Unknown model: ${model}`, type: "invalid_request_error", code: 400 } });
     }
   } catch (err) {
+    if ((err as Error).name === "AbortError" || (err as { code?: string }).code === "ABORT_ERR") {
+      if (!res.headersSent) res.end();
+      return;
+    }
     const { status, message, body } = extractUpstreamError(err);
     if (!res.headersSent) {
       res.status(status).json(body ?? { error: { message, type: "server_error", code: status } });
@@ -936,10 +936,6 @@ function getEncoder(): Tiktoken {
     tiktokenEncoder = get_encoding("cl100k_base");
   }
   return tiktokenEncoder;
-}
-
-function countTikTokens(text: string): number {
-  return getEncoder().encode(text).length;
 }
 
 function countRequestTokens(body: {
@@ -1070,22 +1066,21 @@ router.post("/messages", async (req: Request, res: Response) => {
         setupSSE(res);
         const interval = startKeepalive(res, req);
         try {
-          const msgStream = reqOpts
-            ? anthropic.messages.stream(params, reqOpts)
-            : anthropic.messages.stream(params);
+          const signal = createAbortSignal(req);
+          const streamOpts = { ...reqOpts, signal };
+          const msgStream = anthropic.messages.stream(params, streamOpts);
           for await (const event of msgStream) {
             sendSSE(res, `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
           }
-          sendSSE(res, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
         } finally {
           clearInterval(interval);
           res.end();
         }
       } else {
-        const msgStream = reqOpts
-          ? anthropic.messages.stream(params, reqOpts)
-          : anthropic.messages.stream(params);
-        const msg = await msgStream.finalMessage();
+        const msg = await anthropic.messages.create(
+          params as Anthropic.Messages.MessageCreateParamsNonStreaming,
+          reqOpts,
+        );
         res.json(msg);
       }
     } else if (isOpenAIModel(model)) {
@@ -1111,6 +1106,7 @@ router.post("/messages", async (req: Request, res: Response) => {
         setupSSE(res);
         const interval = startKeepalive(res, req);
         try {
+          const signal = createAbortSignal(req);
           const msgId = `msg_${Date.now()}`;
           const created = Math.floor(Date.now() / 1000);
 
@@ -1121,8 +1117,8 @@ router.post("/messages", async (req: Request, res: Response) => {
           sendSSE(res, `event: content_block_start\ndata: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text", text: "" } })}\n\n`);
           sendSSE(res, `event: ping\ndata: ${JSON.stringify({ type: "ping" })}\n\n`);
 
-          const oaiStreamParams = { ...oaiParams, stream: true as const };
-          const oaiStream = await openai.chat.completions.create(oaiStreamParams);
+          const oaiStreamParams = { ...oaiParams, stream: true as const, stream_options: { include_usage: true } };
+          const oaiStream = await openai.chat.completions.create(oaiStreamParams, { signal });
           const toolCallBuffers: Record<number, { id: string; name: string; arguments: string }> = {};
           const toolCallIndexStarted: Record<number, boolean> = {};
           let inputTokens = 0;
@@ -1130,12 +1126,12 @@ router.post("/messages", async (req: Request, res: Response) => {
           let finishReason: string | null = null;
 
           for await (const chunk of oaiStream) {
-            const choice = chunk.choices[0];
-            if (!choice) continue;
             if (chunk.usage) {
               inputTokens = chunk.usage.prompt_tokens ?? 0;
               outputTokens = chunk.usage.completion_tokens ?? 0;
             }
+            const choice = chunk.choices[0];
+            if (!choice) continue;
             if (choice.finish_reason) finishReason = choice.finish_reason;
 
             const delta = choice.delta;
@@ -1180,6 +1176,10 @@ router.post("/messages", async (req: Request, res: Response) => {
       res.status(400).json({ error: { message: `Unknown model: ${model}`, type: "invalid_request_error", code: 400 } });
     }
   } catch (err) {
+    if ((err as Error).name === "AbortError" || (err as { code?: string }).code === "ABORT_ERR") {
+      if (!res.headersSent) res.end();
+      return;
+    }
     const { status, message, body } = extractUpstreamError(err);
     if (!res.headersSent) {
       res.status(status).json(body ?? { error: { message, type: "server_error", code: status } });
