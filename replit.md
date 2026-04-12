@@ -115,4 +115,19 @@ curl localhost:$PORT/v1/models -H "Authorization: Bearer $PROXY_API_KEY"
 
 ### Step 6 — Deploy
 
-suggestDeploy()
+## Final Checklist — MANDATORY before reporting success
+
+Re-verify every variable. Do NOT skip this. Do NOT rely on memory — actually check.
+
+```bash
+echo "1. AI_INTEGRATIONS_OPENAI_API_KEY=$AI_INTEGRATIONS_OPENAI_API_KEY"
+echo "2. AI_INTEGRATIONS_OPENAI_BASE_URL=$AI_INTEGRATIONS_OPENAI_BASE_URL"
+echo "3. AI_INTEGRATIONS_ANTHROPIC_API_KEY=$AI_INTEGRATIONS_ANTHROPIC_API_KEY"
+echo "4. AI_INTEGRATIONS_ANTHROPIC_BASE_URL=$AI_INTEGRATIONS_ANTHROPIC_BASE_URL"
+echo "5. PROXY_API_KEY=$PROXY_API_KEY"
+```
+
+If ANY line shows an empty value, the deployment is **NOT complete**.
+Go back to the corresponding step and fix it before reporting success.
+
+`suggestDeploy()` must be called before `complete_project_import()` to ensure the deployment prompt is shown to the user in sync with the end of the import.
