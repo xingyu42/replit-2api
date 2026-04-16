@@ -13,7 +13,7 @@ const ORANGE = "#f97316";
 const GRAY = "#6b7280";
 
 const OPENAI_MODELS = ["gpt-5.2", "gpt-5-mini", "gpt-5-nano", "o4-mini", "o3"];
-const ANTHROPIC_MODELS = ["claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"];
+const ANTHROPIC_MODELS = ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6", "claude-haiku-4-5"];
 
 const ENDPOINTS = [
   { method: "GET", path: "/v1/models", label: "List Models", type: "both", description: "Returns the list of available OpenAI and Anthropic models." },
